@@ -1,7 +1,9 @@
-"""Image loading and downscaling.
+"""Image loading and encoding.
 
-JEV latency is dominated by visual prefill, which grows with the number of
-image tokens. Inputs are downscaled before they reach the model.
+Images are passed to the model at their original size by default: prefill cost
+scales with the number of image tokens, so callers that need lower latency
+should send smaller images. Optional max_side / max_pixels limits can be
+configured to have the engine scale them instead.
 """
 
 from __future__ import annotations

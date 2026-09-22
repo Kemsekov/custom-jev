@@ -1,7 +1,7 @@
 PYTHON ?= .venv/bin/python
 PIP ?= .venv/bin/pip
 
-.PHONY: all setup build model assets api eval bench thinking-bench clean
+.PHONY: all setup build model assets api eval bench perf thinking-bench clean
 
 all: setup build model
 
@@ -25,6 +25,9 @@ eval:
 
 bench:
 	$(PYTHON) -m jev.cli bench --targets 32,128,512,1024,2048
+
+perf:
+	bash scripts/07_bench_perf.sh
 
 thinking-bench:
 	bash scripts/06_thinking_bench.sh

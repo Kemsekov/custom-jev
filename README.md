@@ -37,11 +37,17 @@ On 2x Quadro GV100, Q8_0 + mmproj, auto strategy `off` (full tables in
 |---|---|---|
 | authored decisions (18) | 0.833 accuracy | 194 ms p50 |
 | animal photos (10) | 1.000 accuracy | 573 ms p50 |
-| indexing, photos (6 x 3 shuffled orders) | 1.000 (18/18), 3/3 perfect | prefix-cached |
-| indexing, mixed photos + texts | 0.667 (4/6) | prefix-cached |
+| indexing, photos (6 x 3 shuffled orders) | 1.000 (18/18), 3/3 perfect | 4.8 s/6-item group (parallel) |
+| indexing, mixed photos + texts | 0.667 (4/6) | 2.7 s/6-item group (parallel) |
 | maze 5x5 (legal moves) | 3/3 success, 0.85 optimality | 312 ms p50 |
+| one decision | prefill-bound | ~90-130 ms text, ~110-310 ms image |
 | maze 5x5 (all directions) | 0/5, cannot read local walls | |
 | prefill 127 -> 1196 tokens | 102 -> 331 ms, flat 9.9 GB RSS | |
+
+Generation on this GPU is a flat ~90 tok/s while prefill is 1.3-6.3k tok/s
+depending on batch size; a decision pays only prefill and never decodes
+(`predicted_ms = 0.00`). Full breakdown and optimization notes in
+[docs/RESULTS.md](docs/RESULTS.md#generation-baseline-why-a-decision-is-not-a-generated-token).
 
 ## Quick start (4 commands)
 
@@ -57,19 +63,10 @@ Then:
 
 ```bash
 ./scripts/05_fetch_assets.sh     # animal photos for the vision eval
-./scripts/04_eval.sh             # decisions + animals + maze + latency report
+./scripts/04_eval.sh             # decisions + animals + indexing + maze + latency
 ./scripts/06_thinking_bench.sh   # which reasoning-skipping strategy wins
+./scripts/07_bench_perf.sh       # latency by decision shape (decide/many/index)
 ```
-
-## Why Q8_0 and not FP8?
-
-There is no FP8 in GGUF. The format defines integer/block quants (`Q8_0`, ...),
-`BF16`, `F16` and `MXFP4`/`NVFP4`, but no E4M3/E5M2 storage type, and the
-upstream repo ships no FP8 file. `Q8_0` is the 8-bit option that exists: ~4.6 GB,
-near-lossless for a 4B model, and it fits 6-8 GB cards. For bigger cards
-`scripts/02b_convert_precision.sh` converts the full-precision safetensors to an
-F16 GGUF (exact bf16->f16 round-trip; useful because Volta has FP16 tensor
-cores but no BF16 path).
 
 ## Device selection
 
@@ -121,6 +118,11 @@ Cues ending in `:` were rejected outright by the boundary validator because
 they merge with the following letter in the tokenizer. Pin any strategy in
 `config.yaml` with `thinking.mode: off` (or another name) to skip the probe.
 
+The resolved auto strategy is cached per model (gguf name + size +
+chat-template hash) in `results/state/thinking_strategy.json`, so restarting
+the API reuses it instead of probing again; set `JEV_THINKING_REFRESH=1` (or
+delete the file) to force a fresh probe.
+
 ## HTTP API
 
 Interactive docs: `http://127.0.0.1:8000/docs`. One example per endpoint.
@@ -156,8 +158,11 @@ curl -s localhost:8000/v1/decide -H 'content-type: application/json' -d '{
 # {"chosen":"billing","confidence":0.993,"probabilities":{"billing":0.993,...},...}
 ```
 
-**`POST /v1/decide/batch`** - many criteria over the same evidence; the shared
-prefix is KV-cached, so later decisions only evaluate their tail. Add
+**`POST /v1/decide/batch`** - many criteria over the same evidence. By default
+the decisions run concurrently over the server's parallel slots
+(`"parallel": false` forces the sequential path), which is the throughput lever
+on this hybrid model: partial prompt-cache reuse does not happen for diverging
+prompts, so concurrency, not cache branching, amortises the shared evidence. Add
 `"assignment": "hungarian"` when the answers are a declared one-to-one
 matching (all items must share the same option ids): choices are then solved
 globally over the item x option probability matrix - the same solve as
@@ -232,7 +237,7 @@ curl -s localhost:8000/v1/bench/latency -H 'content-type: application/json' \
 | `GET /health` | liveness |
 | `GET /v1/info` | model, device, resolved strategy, probes |
 | `POST /v1/decide` | one decision (text and/or image) |
-| `POST /v1/decide/batch` | many criteria over the same evidence (prefix cache) |
+| `POST /v1/decide/batch` | many criteria over the same evidence (parallel slots) |
 | `POST /v1/index` | mixed image/text indexing -> `item:index`, Hungarian assignment |
 | `POST /v1/diagnose` | raw next-token probes for every strategy |
 | `POST /v1/maze/solve` | run the maze task end to end |

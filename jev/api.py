@@ -94,6 +94,7 @@ def create_app(cfg: Config | None = None, engine: JevEngine | None = None) -> Fa
                 thinking=req.thinking,
                 assignment=req.assignment,
                 objective=req.objective,
+                parallel=req.parallel,
             )
         except (ValidationError, ReadoutError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -135,6 +136,7 @@ def create_app(cfg: Config | None = None, engine: JevEngine | None = None) -> Fa
                 assignment=req.assignment,
                 objective=req.objective,
                 thinking=req.thinking,
+                parallel=req.parallel,
             )
         except (ValidationError, ReadoutError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -162,6 +164,10 @@ def create_app(cfg: Config | None = None, engine: JevEngine | None = None) -> Fa
                     "confidence": r["confidence"],
                     "prompt_tokens": r["prompt_tokens"],
                     "cached_tokens": r["cached_tokens"],
+                    "reused_tokens": r.get("reused_tokens", 0),
+                    "readout": r.get("readout", "auto"),
+                    "prompt_ms": round(r.get("prompt_ms", 0.0), 2),
+                    "wall_ms": round(r.get("wall_ms", 0.0), 2),
                 }
                 for r in records
             ],

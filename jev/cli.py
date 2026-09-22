@@ -141,6 +141,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--targets", default="32,128,512,1024")
     p.add_argument("--repeats", type=int, default=1)
 
+    p = sub.add_parser(
+        "perf", help="latency/cache benchmark by decision shape (decide, many, index)"
+    )
+    _add_config(p)
+    p.add_argument("--repeats", type=int, default=3)
+
     p = sub.add_parser("config", help="print the resolved configuration")
     _add_config(p)
 
@@ -338,6 +344,14 @@ def main(argv: list[str] | None = None) -> int:
                     repeats=args.repeats,
                 )
             )
+            return 0
+
+        if args.command == "perf":
+            from .tasks.perf import render_markdown, run_perf
+
+            report = run_perf(engine, repeats=args.repeats)
+            print(render_markdown(report))
+            _dump({"artifacts": report["artifacts"]})
             return 0
 
     return 1

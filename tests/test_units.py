@@ -262,6 +262,37 @@ def test_index_inputs_requires_explicit_prompt(tmp_path):
         engine.index_inputs(**{**base, "items": []})
 
 
+def test_thinking_strategy_cache_roundtrip(tmp_path):
+    import json as _json
+
+    from jev.engine import JevEngine
+
+    cfg = Config.load()
+    cfg.thinking.cache_path = str(tmp_path / "thinking.json")
+    engine = JevEngine(cfg)
+    engine._chat_template = "template with enable_thinking"
+    engine._strategy = "answer_cue"
+    engine._strategy_source = "probed"
+    engine._probe_results = []
+
+    assert engine._load_cached_strategy() is None
+    engine._save_cached_strategy()
+    assert engine._load_cached_strategy() == "answer_cue"
+
+    # a different chat template invalidates the entry
+    engine._chat_template = "a different template"
+    assert engine._load_cached_strategy() is None
+
+    # an unknown strategy name is ignored
+    engine._chat_template = "template with enable_thinking"
+    path = tmp_path / "thinking.json"
+    data = _json.loads(path.read_text())
+    key = next(iter(data))
+    data[key]["strategy"] = "not-a-strategy"
+    path.write_text(_json.dumps(data))
+    assert engine._load_cached_strategy() is None
+
+
 def test_decide_many_assignment_validation():
     from jev.engine import JevEngine
 

@@ -113,6 +113,10 @@ def default_strategies() -> dict[str, StrategyConfig]:
 @dataclass
 class ThinkingConfig:
     mode: str = "auto"
+    # Persist the auto-selected strategy per model so restarts do not re-probe.
+    cache: bool = True
+    cache_path: str = "results/state/thinking_strategy.json"
+    refresh: bool = False
     auto_order: list[str] = field(
         default_factory=lambda: [
             "system_no_reasoning",
@@ -141,8 +145,11 @@ class ThinkingConfig:
 
 @dataclass
 class ImageConfig:
-    max_side: int = 512
-    max_pixels: int = 262144
+    # None keeps the image at its original size: pre-downscale inputs yourself
+    # when you want faster prefill. Set max_side / max_pixels to have the
+    # engine scale them.
+    max_side: int | None = None
+    max_pixels: int | None = None
     format: str = "png"
 
 
@@ -151,6 +158,17 @@ class EngineConfig:
     max_options: int = 16
     request_timeout: float = 180
     top_probs: int = 16
+    # Run multi-decision groups (decide_many, index_inputs) concurrently over
+    # the server's parallel slots. Semantics are unchanged; throughput improves
+    # because llama-server batch-processes concurrent prompts.
+    parallel_decisions: bool = True
+    # Readout mode:
+    #   auto    - read the option probabilities from the top-n probabilities
+    #             without a grammar (identical conditional distribution when all
+    #             option tokens are present) and fall back to grammar otherwise.
+    #             Saves the per-request GBNF compile (~30 ms here).
+    #   grammar - always constrain the first token with a GBNF grammar.
+    readout: str = "auto"
 
 
 @dataclass
@@ -234,6 +252,10 @@ class Config:
             self.tensor_split = ts
         if mode := env.get("JEV_THINKING_MODE"):
             self.thinking.mode = mode
+        if refresh := env.get("JEV_THINKING_REFRESH"):
+            self.thinking.refresh = refresh.lower() in ("1", "true", "yes", "on")
+        if cache := env.get("JEV_THINKING_CACHE"):
+            self.thinking.cache = cache.lower() not in ("0", "false", "no", "off")
 
     # ------------------------------------------------------------------
     @property

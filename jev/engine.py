@@ -14,14 +14,17 @@ No text is generated, no sampling loop runs, no KV cache grows.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Iterable
 
 from .assignment import argmax_assignment, optimal_assignment
 from .client import LlamaClient, LlamaClientError
-from .config import Config, StrategyConfig
+from .config import PROJECT_ROOT, Config, StrategyConfig
 from .images import encode_image, encode_images
 from .llama_server import LlamaServer
 from .prompting import (
@@ -82,6 +85,8 @@ class DecisionResult:
     argmax_choice: str | None = None
     assignment_method: str | None = None
     assignment_changed: bool = False
+    reused_tokens: int = 0
+    readout: str = "auto"
     timings: dict[str, float] = field(default_factory=dict)
     tokens_evaluated: int = 0
     cached_tokens: int = 0
@@ -125,6 +130,7 @@ class JevEngine:
         self._chat_template = ""
         self._model_props: dict = {}
         self._strategy: str | None = None
+        self._strategy_source: str = "none"
         self._probe_results: list[ProbeResult] = []
         self._letter_tokens: dict[str, int] = {}
         self._pin_cache: dict[str, PinningReport] = {}
@@ -189,8 +195,21 @@ class JevEngine:
         if mode != "auto":
             spec = self._spec(mode)
             self._strategy = spec.name
+            self._strategy_source = "configured"
             log.info("thinking strategy: %s (configured)", spec.name)
             return
+
+        if self.cfg.thinking.cache and not self.cfg.thinking.refresh:
+            cached = self._load_cached_strategy()
+            if cached:
+                self._strategy = cached
+                self._strategy_source = "cached"
+                log.info(
+                    "thinking strategy: %s (cached for %s; no probe)",
+                    cached,
+                    self.cfg.model.gguf_path.name,
+                )
+                return
 
         order = [n for n in self.cfg.thinking.auto_order if n != "on"]
         results: list[ProbeResult] = []
@@ -223,11 +242,14 @@ class JevEngine:
             ).strategy
         self._probe_results = results
         self._strategy = chosen or "off"
+        self._strategy_source = "probed"
         if not usable:
             log.error(
                 "no strategy preserved the answer boundary; JEV readout will "
                 "fail until the thinking strategies are fixed"
             )
+        if self.cfg.thinking.cache:
+            self._save_cached_strategy()
         log.info(
             "thinking strategy auto-selected: %s (probes: %s)",
             self._strategy,
@@ -236,6 +258,79 @@ class JevEngine:
                 f"mass:{p.letter_mass:.3f}"
                 for p in results
             ],
+        )
+
+    # ------------------------------------------------------------------
+    # thinking-strategy cache (per model fingerprint)
+    # ------------------------------------------------------------------
+    def _thinking_cache_file(self) -> Path:
+        path = Path(self.cfg.thinking.cache_path)
+        return path if path.is_absolute() else PROJECT_ROOT / path
+
+    def _model_fingerprint(self) -> dict:
+        try:
+            size = self.cfg.model.gguf_path.stat().st_size
+        except OSError:
+            size = 0
+        return {
+            "model": self.cfg.model.gguf_path.name,
+            "model_bytes": size,
+            "chat_template_sha256": hashlib.sha256(
+                self._chat_template.encode()
+            ).hexdigest()[:16],
+        }
+
+    def _load_cached_strategy(self) -> str | None:
+        path = self._thinking_cache_file()
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        entry = data.get(self.cfg.model.gguf_path.name)
+        if not isinstance(entry, dict):
+            return None
+        fingerprint = self._model_fingerprint()
+        if (
+            entry.get("model_bytes") != fingerprint["model_bytes"]
+            or entry.get("chat_template_sha256") != fingerprint["chat_template_sha256"]
+        ):
+            log.warning(
+                "cached thinking strategy for %s is stale (model or template "
+                "changed); re-probing",
+                fingerprint["model"],
+            )
+            return None
+        strategy = entry.get("strategy")
+        if strategy != "off" and strategy not in self.cfg.thinking.strategies:
+            return None
+        return strategy
+
+    def _save_cached_strategy(self) -> None:
+        path = self._thinking_cache_file()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = json.loads(path.read_text()) if path.exists() else {}
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        data[self.cfg.model.gguf_path.name] = {
+            **self._model_fingerprint(),
+            "strategy": self._strategy,
+            "source": self._strategy_source,
+            "probes": [p.to_dict() for p in self._probe_results],
+            "updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        try:
+            path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+        except OSError as exc:  # pragma: no cover - cache is best effort
+            log.warning("could not write thinking-strategy cache: %s", exc)
+            return
+        log.info(
+            "cached thinking strategy %s for %s at %s",
+            self._strategy,
+            self.cfg.model.gguf_path.name,
+            path,
         )
 
     @property
@@ -408,18 +503,44 @@ class JevEngine:
         )
         pinning = self._pin(rendered.prompt, len(options))
         grammar = build_grammar(len(options))
+        readout_mode = (self.cfg.engine.readout or "auto").lower()
+        if readout_mode not in ("auto", "grammar"):
+            raise ValidationError(
+                f"engine.readout must be 'auto' or 'grammar', got {readout_mode!r}"
+            )
+        # Without a grammar, the top-n probabilities already contain the option
+        # slots whenever the model answers with a letter; renormalising them
+        # yields the exact same conditional distribution the grammar would have
+        # enforced. Grammar is then only a safety net for the rare case where a
+        # slot is missing from the returned candidates.
+        n_probs = max(self.cfg.engine.top_probs, len(options) + 8)
 
         t0 = time.perf_counter()
         try:
             resp = self.client.completion(
                 rendered.prompt,
-                grammar=grammar,
+                grammar=grammar if readout_mode == "grammar" else None,
                 multimodal_data=data_urls or None,
-                n_probs=max(self.cfg.engine.top_probs, len(options)),
+                n_probs=n_probs,
                 cache_prompt=cache_prompt,
             )
         except LlamaClientError as exc:
             raise JevError(str(exc)) from exc
+        readout_used = "grammar" if readout_mode == "grammar" else "probs"
+        if readout_mode == "auto" and not _slots_present(resp, pinning.slot_token_ids):
+            # fall back to a grammar-constrained pass for an exact readout
+            log.info("option slots missing from top-%d; retrying with grammar", n_probs)
+            try:
+                resp = self.client.completion(
+                    rendered.prompt,
+                    grammar=grammar,
+                    multimodal_data=data_urls or None,
+                    n_probs=n_probs,
+                    cache_prompt=cache_prompt,
+                )
+            except LlamaClientError as exc:
+                raise JevError(str(exc)) from exc
+            readout_used = "grammar-fallback"
         wall_ms = (time.perf_counter() - t0) * 1000.0
 
         probs = _resolve_option_probs(resp, pinning.slot_token_ids)
@@ -437,6 +558,8 @@ class JevEngine:
         ]
         timings = _timings(resp)
         timings["wall_ms"] = wall_ms
+        prompt_n = int(timings.get("prompt_n", 0))
+        tokens_cached = int(resp.get("tokens_cached", 0))
         return DecisionResult(
             id=decision_id,
             question=question,
@@ -455,11 +578,29 @@ class JevEngine:
             has_image=bool(data_urls),
             image_count=len(data_urls),
             argmax_choice=options[chosen_idx]["id"],
+            reused_tokens=max(0, tokens_cached - prompt_n),
+            readout=readout_used,
             timings=timings,
             tokens_evaluated=int(timings.get("prompt_n", 0))
             + int(timings.get("predicted_n", 0)),
             cached_tokens=int(resp.get("tokens_cached", 0)),
         )
+
+    def _dispatch(self, jobs: list, parallel: bool | None = None) -> list:
+        """Run decision jobs sequentially or across the server's slots.
+
+        Requests are independent, and llama-server with -np N batch-processes
+        concurrent prompts (continuous batching), which is the only practical
+        way to amortize prefill on this hybrid model: partial prompt-cache
+        reuse is unavailable, so concurrency is what buys throughput.
+        """
+        parallel = self.cfg.engine.parallel_decisions if parallel is None else parallel
+        if not parallel or len(jobs) <= 1:
+            return [job() for job in jobs]
+        workers = min(len(jobs), max(1, self.cfg.model.parallel))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(job) for job in jobs]
+            return [future.result() for future in futures]
 
     def decide_many(
         self,
@@ -471,6 +612,7 @@ class JevEngine:
         thinking: str | None = None,
         assignment: str = "none",
         objective: str = "logprob",
+        parallel: bool | None = None,
     ) -> list[DecisionResult]:
         """One state/image set, many criteria: prefix cache is reused.
 
@@ -513,19 +655,22 @@ class JevEngine:
                 )
 
         data_urls = self._encode_sources(image, images)
-        results = []
-        for i, (q, opts) in enumerate(zip(questions, options)):
-            results.append(
-                self.decide(
-                    question=q,
-                    options=opts,
-                    state=state,
-                    thinking=thinking,
-                    decision_id=f"shared-{i}",
-                    cache_prompt=True,
-                    _data_urls=data_urls,
-                )
+
+        def job(i: int, question: str, opts: list[dict]):
+            return lambda: self.decide(
+                question=question,
+                options=opts,
+                state=state,
+                thinking=thinking,
+                decision_id=f"shared-{i}",
+                cache_prompt=True,
+                _data_urls=data_urls,
             )
+
+        results = self._dispatch(
+            [job(i, q, opts) for i, (q, opts) in enumerate(zip(questions, options))],
+            parallel,
+        )
 
         if assignment == "hungarian" and results and normalized is not None:
             item_ids = [r.id for r in results]
@@ -563,6 +708,7 @@ class JevEngine:
         assignment: str = "hungarian",
         objective: str = "logprob",
         thinking: str | None = None,
+        parallel: bool | None = None,
     ) -> list[dict]:
         """Indexing readout over mixed inputs, with a caller-supplied prompt.
 
@@ -615,25 +761,37 @@ class JevEngine:
             input_evidence.append(entry)
         base_state = {"inputs": input_evidence}
 
-        records = []
-        for item in items:
-            item_text = str(item)
-            result = self.decide(
-                question=prompt.replace("{item}", item_text),
-                options=options,
-                state={**base_state, "item_to_assign": item_text},
-                thinking=thinking,
-                decision_id=f"index-{len(records)}",
-                cache_prompt=True,
-                _data_urls=data_urls,
+        item_texts = [str(item) for item in items]
+
+        def job(index: int, item_text: str):
+            return lambda: (
+                item_text,
+                self.decide(
+                    question=prompt.replace("{item}", item_text),
+                    options=options,
+                    state={**base_state, "item_to_assign": item_text},
+                    thinking=thinking,
+                    decision_id=f"index-{index}",
+                    cache_prompt=True,
+                    _data_urls=data_urls,
+                ),
             )
+
+        records = []
+        for item_text, result in self._dispatch(
+            [job(i, text) for i, text in enumerate(item_texts)], parallel
+        ):
             records.append(
                 {
                     "item": item_text,
                     "confidence": result.confidence,
                     "probabilities": {o.id: o.probability for o in result.options},
                     "cached_tokens": result.cached_tokens,
+                    "reused_tokens": result.reused_tokens,
+                    "readout": result.readout,
                     "prompt_tokens": result.tokens_evaluated,
+                    "wall_ms": result.timings.get("wall_ms", 0.0),
+                    "prompt_ms": result.timings.get("prompt_ms", 0.0),
                     "result": result,
                 }
             )
@@ -704,6 +862,8 @@ class JevEngine:
             "parallel_slots": self.cfg.model.parallel,
             "thinking_mode": self.cfg.thinking.mode,
             "thinking_strategy": self.strategy,
+            "thinking_strategy_source": self._strategy_source,
+            "thinking_cache": str(self._thinking_cache_file()),
             "available_strategies": sorted(self.cfg.thinking.strategies),
             "auto_probes": [p.to_dict() for p in self._probe_results],
             "template_supports_thinking": self._supports_thinking,
@@ -748,6 +908,14 @@ def _resolve_option_probs(resp: dict, slot_ids: list[int]) -> list[float]:
             f"count. Top tokens: {[t['token'] for t in top][:8]}"
         )
     return [r / total for r in raw]
+
+
+def _slots_present(resp: dict, slot_ids: list[int]) -> bool:
+    """True when every option token appears in the returned candidate list."""
+    present = {
+        int(t["id"]) for t in _top_tokens(resp) if float(t.get("prob", 0.0)) > 0.0
+    }
+    return all(slot_id in present for slot_id in slot_ids)
 
 
 def _top_tokens(resp: dict) -> list[dict]:

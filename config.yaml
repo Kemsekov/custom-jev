@@ -29,8 +29,9 @@ flash_attn: auto
 model:
   gguf: models/gguf/Qwen3.8-4B-Q8_0.gguf
   mmproj: models/gguf/mmproj-Qwen3.5-4B-BF16.gguf
-  # total context; llama.cpp divides it across parallel slots (-np)
-  ctx_size: 16384
+  # total context; llama.cpp divides it across parallel slots (-np).
+  # 32768 = 8192 per slot, enough for six full-size photos plus the prompt.
+  ctx_size: 32768
   batch_size: 2048
   ubatch_size: 512
   parallel: 4
@@ -54,6 +55,12 @@ server:
 #   system_suffix:   appended to the system message
 thinking:
   mode: auto
+  # Cache the auto-selected strategy per model (keyed by gguf name + size +
+  # chat-template hash) so restarting the API does not re-probe.
+  cache: true
+  cache_path: results/state/thinking_strategy.json
+  # JEV_THINKING_REFRESH=1 forces a fresh probe and updates the cache.
+  refresh: false
   # Ordered by measured performance (scripts/06_thinking_bench.sh):
   # off/answer_cue score best and keep the sharpest option mass. Injecting
   # <think> text (think_*_cue) actually induced more thinking on this model.
@@ -91,10 +98,11 @@ thinking:
   think_markers: ["<think", "<|channel>", "thinking"]
 
 image:
-  # Visual inputs are downscaled before prefill: latency scales with tokens.
-  # 640 keeps a 5-6 cell maze legible (~500 vision tokens on Qwen3.5-VL).
-  max_side: 512
-  max_pixels: 262144
+  # Images are sent to the model at their original size. Prefill cost scales
+  # with image tokens, so downscale inputs yourself when latency matters.
+  # Set max_side / max_pixels to let the engine scale them instead.
+  max_side: null
+  max_pixels: null
   format: png
 
 engine:
@@ -102,6 +110,13 @@ engine:
   request_timeout: 180
   # Extra completion params merged into every readout request.
   top_probs: 16
+  # Run decide_many / index_inputs decisions concurrently over the server's
+  # parallel slots (-np). Same answers, higher throughput.
+  parallel_decisions: true
+  # auto: read option probabilities from top-n probs without a grammar (same
+  # conditional distribution when all option tokens are present) and fall back
+  # to a GBNF grammar otherwise. Saves the ~30 ms per-request grammar compile.
+  readout: auto
 
 api:
   host: 127.0.0.1

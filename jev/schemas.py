@@ -58,6 +58,15 @@ class BatchItem(BaseModel):
 class BatchDecideRequest(EvidenceIn):
     items: list[BatchItem] = Field(description="Multiple criteria over the same evidence.")
     thinking: ThinkingMode | None = None
+    parallel: bool | None = Field(
+        default=None,
+        description=(
+            "Run decisions concurrently over the server's parallel slots. "
+            "null uses the engine default (parallel_decisions in config.yaml). "
+            "Parallel lowers total wall time; individual latencies rise while "
+            "requests share the GPU."
+        ),
+    )
     assignment: Literal["none", "hungarian"] = Field(
         default="none",
         description=(
@@ -120,6 +129,13 @@ class IndexRequest(BaseModel):
         ),
     )
     thinking: ThinkingMode | None = None
+    parallel: bool | None = Field(
+        default=None,
+        description=(
+            "Run the per-item decisions concurrently over the server's "
+            "parallel slots; null uses the engine default."
+        ),
+    )
 
 
 class DiagnoseRequest(BaseModel):

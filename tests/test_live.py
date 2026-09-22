@@ -31,6 +31,10 @@ def test_info_and_pinning(engine):
     assert info["thinking_strategy"] in info["available_strategies"]
     assert info["template_supports_thinking"] is True
     assert engine._slot_token("A") != engine._slot_token("B")
+    if info["thinking_mode"] == "auto":
+        assert info["thinking_strategy_source"] in ("cached", "probed")
+        # the resolved strategy is persisted for the next API start
+        assert engine._load_cached_strategy() == info["thinking_strategy"]
 
 
 def test_text_decision_is_conditional(engine):
