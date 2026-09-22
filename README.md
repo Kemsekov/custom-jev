@@ -53,9 +53,9 @@ depending on batch size; a decision pays only prefill and never decodes
 
 ```bash
 ./scripts/00_install_deps.sh     # python deps (no torch needed)
-./scripts/01_build_llama_cpp.sh  # llama.cpp with CUDA (or CPU)
-cp .env.example .env             # add HF_TOKEN if you have one
-./scripts/02_download_model.sh   # Qwen3.8-4B-Distill Q8_0 + vision mmproj
+./scripts/01_build_llama_cpp.sh  # llama.cpp with CUDA (falls back to CPU)
+cp .env.example .env             # add HF_TOKEN; pick 4B (default) or 9B
+./scripts/02_download_model.sh   # downloads the model selected in .env
 ./scripts/03_run_api.sh          # API at http://127.0.0.1:8000/docs
 ```
 
@@ -68,13 +68,36 @@ Then:
 ./scripts/07_bench_perf.sh       # latency by decision shape (decide/many/index)
 ```
 
+## Model selection
+
+The model is picked in `.env` and downloaded by `scripts/02_download_model.sh`:
+
+```bash
+JEV_GGUF_REPO=empero-ai/Qwen3.8-4B-Distill-GGUF   # default, Q8_0
+JEV_GGUF_FILE=Qwen3.8-4B-Q8_0.gguf
+JEV_MMPROJ_REPO=lmstudio-community/Qwen3.5-4B-GGUF
+JEV_MMPROJ_FILE=mmproj-Qwen3.5-4B-BF16.gguf
+
+# larger alternative, comment the 4B block and uncomment this one:
+#JEV_GGUF_REPO=empero-ai/Qwen3.8-9B-Distill-GGUF
+#JEV_GGUF_FILE=Qwen3.8-9B-Q8_0.gguf
+#JEV_MMPROJ_REPO=lmstudio-community/Qwen3.5-9B-GGUF
+#JEV_MMPROJ_FILE=mmproj-Qwen3.5-9B-BF16.gguf
+```
+
+Supported repos: [empero-ai/Qwen3.8-4B-Distill-GGUF](https://huggingface.co/empero-ai/Qwen3.8-4B-Distill-GGUF)
+and [empero-ai/Qwen3.8-9B-Distill-GGUF](https://huggingface.co/empero-ai/Qwen3.8-9B-Distill-GGUF)
+(Q4_K_M, Q5_K_M, Q6_K, Q8_0, BF16). Any file the repo hosts works; the mmproj
+is the matching Qwen3.5 vision projector. `JEV_GGUF` / `JEV_MMPROJ` are full
+absolute-path overrides.
+
 ## Device selection
 
 Everything is in `config.yaml`:
 
 ```yaml
 device: auto        # auto | cpu | cuda | cuda:0 | cuda:0,1
-gpu_layers: auto    # auto = all layers on GPU, none on CPU
+gpu_layers: auto    # auto = fit as many layers as free VRAM allows
 tensor_split: null  # e.g. "0.5,0.5" for two GPUs
 main_gpu: 0
 threads: null       # null = physical cores

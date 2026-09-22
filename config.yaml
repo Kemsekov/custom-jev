@@ -11,7 +11,10 @@
 #   cuda:N[,M...] -> offload to specific devices (see `llama-server --list-devices`)
 device: auto
 
-# Number of layers on GPU. null/auto: all layers for cuda, none for cpu.
+# Layers on GPU. auto: fit as many as free VRAM allows (llama.cpp --fit),
+# which still offloads everything on an empty GPU but degrades to partial
+# offload instead of OOM when another process holds GPU memory.
+# An integer forces that count, "all" forces every layer.
 gpu_layers: auto
 
 # For multi-GPU: e.g. "0.5,0.5". null -> llama.cpp default (layer split).
@@ -26,6 +29,10 @@ threads: null
 # on | off | auto
 flash_attn: auto
 
+# Model files. Switch models per machine in .env:
+# scripts/02_download_model.sh reads JEV_GGUF_REPO / JEV_GGUF_FILE (and the
+# mmproj pair) and the runtime resolves JEV_GGUF_FILE / JEV_MMPROJ_FILE to
+# these same paths under models/gguf/.
 model:
   gguf: models/gguf/Qwen3.8-4B-Q8_0.gguf
   mmproj: models/gguf/mmproj-Qwen3.5-4B-BF16.gguf

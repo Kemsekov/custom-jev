@@ -238,10 +238,15 @@ class Config:
             self.server.port = int(port)
         if api_port := env.get("JEV_API_PORT"):
             self.api.port = int(api_port)
-        if gguf := env.get("JEV_GGUF"):
-            self.model.gguf = gguf
-        if mmproj := env.get("JEV_MMPROJ"):
-            self.model.mmproj = mmproj or None
+        if "JEV_GGUF" in env:
+            self.model.gguf = env["JEV_GGUF"]
+        elif gguf_file := env.get("JEV_GGUF_FILE"):
+            self.model.gguf = str(Path("models/gguf") / gguf_file)
+        if "JEV_MMPROJ" in env:
+            self.model.mmproj = env["JEV_MMPROJ"] or None
+        elif "JEV_MMPROJ_FILE" in env:
+            mmproj_file = env["JEV_MMPROJ_FILE"].strip()
+            self.model.mmproj = str(Path("models/gguf") / mmproj_file) if mmproj_file else None
         if ctx := env.get("JEV_CTX_SIZE"):
             self.model.ctx_size = int(ctx)
         if ngl := env.get("JEV_GPU_LAYERS"):

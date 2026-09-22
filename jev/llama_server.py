@@ -149,8 +149,16 @@ class LlamaServer:
             if indices is not None:
                 args += ["--device", ",".join(f"CUDA{i}" for i in indices)]
             ngl = cfg.gpu_layers
-            ngl = 99 if ngl in (None, "auto") else int(ngl)
-            args += ["-ngl", str(ngl)]
+            if ngl is None or (isinstance(ngl, str) and ngl.strip().lower() == "auto"):
+                # Leave n_gpu_layers unset so llama.cpp's --fit (on by default)
+                # offloads as many layers as free VRAM allows. This still puts
+                # every layer on an empty GPU, but degrades to partial offload
+                # instead of failing when another process holds GPU memory.
+                pass
+            elif isinstance(ngl, str):
+                args += ["-ngl", ngl.strip()]
+            else:
+                args += ["-ngl", str(int(ngl))]
             if cfg.tensor_split:
                 args += ["-ts", str(cfg.tensor_split)]
             if cfg.main_gpu is not None and (indices is None or len(indices) > 1):
