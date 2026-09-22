@@ -14,6 +14,17 @@ from jev.engine import JevEngine
 from jev.tasks.animals import DEFAULT_DIR, list_animal_images
 from jev.tasks.maze import solve_maze
 
+TEST_IMAGE_MAX_SIDE = 512
+
+
+def _resized(path, max_side: int = TEST_IMAGE_MAX_SIDE):
+    """Keep tests fast: the API takes images as-is, so tests send small ones."""
+    from PIL import Image
+
+    image = Image.open(path)
+    image.thumbnail((max_side, max_side), Image.LANCZOS)
+    return image
+
 
 @pytest.fixture(scope="module")
 def engine():
@@ -64,7 +75,7 @@ def test_animal_decision_via_decide(engine):
     result = engine.decide(
         question="Which animal is shown in the image? Choose one label.",
         options=[{"id": name, "description": name} for name in labels],
-        image=str(path),
+        image=_resized(path),
     )
     assert result.chosen in labels
     assert result.has_image
@@ -93,7 +104,7 @@ def test_indexing_six_animals_different_orders(engine):
         inputs = [
             {
                 "type": "image",
-                "image": images[i][1],
+                "image": _resized(images[i][1]),
                 "label": f"photo {position + 1}",
             }
             for position, i in enumerate(order)
@@ -124,9 +135,9 @@ def test_indexing_mixed_images_and_text(engine):
         pytest.skip("need 3 animal images; run scripts/05_fetch_assets.sh")
     first, middle, last = images[0], images[1], images[2]
     inputs = [
-        {"type": "image", "image": first[1], "label": "photo 1"},
+        {"type": "image", "image": _resized(first[1]), "label": "photo 1"},
         {"type": "text", "text": f"a photo of a {middle[0]}", "label": "note 2"},
-        {"type": "image", "image": last[1], "label": "photo 3"},
+        {"type": "image", "image": _resized(last[1]), "label": "photo 3"},
     ]
     records = engine.index_inputs(
         inputs=inputs,

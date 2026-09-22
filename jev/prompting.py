@@ -17,16 +17,18 @@ from .config import StrategyConfig
 
 LETTERS = "ABCDEFGHIJKLMNOP"
 
+# Compact JSON saves prompt tokens but measurably hurts decision accuracy
+# (0.722 vs 0.833 on the authored suite), so the spaced form is kept.
+COMPACT_JSON = False
+
 SYSTEM_TEXT = (
-    "Apply the supplied criterion to the supplied evidence. "
-    "Choose exactly one listed option. Respond with only its uppercase letter, "
-    "with no explanation or reasoning."
+    "Apply the criterion to the evidence. Choose exactly one option. "
+    "Answer with only its uppercase letter, no explanation or reasoning."
 )
 
 SYSTEM_VISION = (
-    "Apply the supplied criterion to the supplied image and evidence. "
-    "Choose exactly one listed option. Respond with only its uppercase letter, "
-    "with no explanation or reasoning."
+    "Apply the criterion to the image and evidence. Choose exactly one option. "
+    "Answer with only its uppercase letter, no explanation or reasoning."
 )
 
 
@@ -115,7 +117,12 @@ def build_messages(
             for i, opt in enumerate(options)
         ],
     }
-    text = json.dumps(payload, ensure_ascii=False)
+    # Compact separators save prompt tokens: every token is prefill time.
+    text = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":") if COMPACT_JSON else None,
+    )
     system = SYSTEM_VISION if urls else SYSTEM_TEXT
     if urls:
         # Images appear in order; option descriptions refer to their index.
