@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jev-multimodal"
+version = "0.1.0"
+description = "Semantic-if decisions from a single multimodal forward pass (JEV on GGUF)"
+requires-python = ">=3.10"
+dependencies = [
+    "huggingface_hub>=1.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pillow>=10.0",
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+jev = "jev.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["jev*"]

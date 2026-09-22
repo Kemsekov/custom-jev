@@ -1,0 +1,108 @@
+# JEV runtime configuration.
+#
+# Everything the engine needs is here: model files, device placement,
+# llama-server tuning, thinking handling and image limits.
+
+# --- device placement -------------------------------------------------------
+# auto | cpu | cuda | cuda:0 | cuda:0,1
+#   auto  -> use CUDA if any GPU is visible to the built llama.cpp, else CPU
+#   cpu   -> force -ngl 0 and run entirely on the CPU
+#   cuda  -> offload to all visible CUDA devices
+#   cuda:N[,M...] -> offload to specific devices (see `llama-server --list-devices`)
+device: auto
+
+# Number of layers on GPU. null/auto: all layers for cuda, none for cpu.
+gpu_layers: auto
+
+# For multi-GPU: e.g. "0.5,0.5". null -> llama.cpp default (layer split).
+tensor_split: null
+
+# Index of the main GPU (used for the output layer / small tensors).
+main_gpu: 0
+
+# CPU threads. null -> physical cores of this machine.
+threads: null
+
+# on | off | auto
+flash_attn: auto
+
+model:
+  gguf: models/gguf/Qwen3.8-4B-Q8_0.gguf
+  mmproj: models/gguf/mmproj-Qwen3.5-4B-BF16.gguf
+  # total context; llama.cpp divides it across parallel slots (-np)
+  ctx_size: 16384
+  batch_size: 2048
+  ubatch_size: 512
+  parallel: 4
+  cache_type_k: f16
+  cache_type_v: f16
+
+server:
+  host: 127.0.0.1
+  port: 8080
+  startup_timeout: 600
+  # Extra raw llama-server flags, e.g. ["--no-mmap"].
+  extra_args: []
+
+# --- reasoning-skipping strategies -----------------------------------------
+# mode: auto | <strategy name>
+#   auto -> probe every strategy in auto_order and pick the first that both
+#           avoids a thinking opener and puts an option letter on top.
+# Each strategy:
+#   template_kwargs: passed to the chat template
+#   inject:          appended after the rendered generation prompt
+#   system_suffix:   appended to the system message
+thinking:
+  mode: auto
+  # Ordered by measured performance (scripts/06_thinking_bench.sh):
+  # off/answer_cue score best and keep the sharpest option mass. Injecting
+  # <think> text (think_*_cue) actually induced more thinking on this model.
+  auto_order:
+    - "off"
+    - answer_cue
+    - system_no_reasoning
+    - no_think
+    - think_empty_cue
+    - think_skip_cue
+  strategies:
+    "off":
+      description: "chat-template enable_thinking=false only"
+      template_kwargs: {enable_thinking: false}
+    system_no_reasoning:
+      description: "system prompt forbids reasoning"
+      template_kwargs: {enable_thinking: false}
+      system_suffix: " Do not reason. Output the option letter immediately."
+    think_skip_cue:
+      description: "closed <think> with a skip instruction + answer cue"
+      template_kwargs: {enable_thinking: false}
+      inject: "<think>\nSkip internal reasoning.\n</think>\n\nAnswer with one option letter only.\nOption:\n"
+    think_empty_cue:
+      description: "empty closed <think> block + answer cue"
+      template_kwargs: {enable_thinking: false}
+      inject: "<think>\n\n</think>\n\nAnswer with one option letter only.\nOption:\n"
+    answer_cue:
+      description: "bare answer cue, no think block"
+      template_kwargs: {enable_thinking: false}
+      inject: "\nFinal answer:\n"
+    no_think:
+      description: "Qwen-style /no_think soft switch"
+      template_kwargs: {enable_thinking: false}
+      inject: "\n/no_think\nOption:\n"
+  think_markers: ["<think", "<|channel>", "thinking"]
+
+image:
+  # Visual inputs are downscaled before prefill: latency scales with tokens.
+  # 640 keeps a 5-6 cell maze legible (~500 vision tokens on Qwen3.5-VL).
+  max_side: 512
+  max_pixels: 262144
+  format: png
+
+engine:
+  max_options: 16
+  request_timeout: 180
+  # Extra completion params merged into every readout request.
+  top_probs: 16
+
+api:
+  host: 127.0.0.1
+  port: 8000

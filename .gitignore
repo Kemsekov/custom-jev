@@ -1,0 +1,11 @@
+.venv/
+models/
+logs/
+data/images/generated/
+results/
+third_party/
+__pycache__/
+*.pyc
+.env
+.pytest_cache/
+data/images/animals/
